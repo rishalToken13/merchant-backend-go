@@ -13,6 +13,7 @@ import (
 
 	"token13/merchant-backend-go/internal/auth"
 	"token13/merchant-backend-go/internal/domain/ids"
+	"token13/merchant-backend-go/internal/queue/rabbit"
 )
 
 // -------------------------
@@ -49,17 +50,14 @@ type TronService interface {
 // -------------------------
 
 type AuthHandler struct {
-	repo AuthRepo
-	jwt  *auth.JWTManager
-	tron TronService
+	repo      AuthRepo
+	jwt       *auth.JWTManager
+	tron      TronService
+	publisher *rabbit.Publisher
 }
 
-func NewAuthHandler(repo AuthRepo, jwt *auth.JWTManager, tron TronService) *AuthHandler {
-	return &AuthHandler{
-		repo: repo,
-		jwt:  jwt,
-		tron: tron,
-	}
+func NewAuthHandler(repo AuthRepo, jwt *auth.JWTManager, tron TronService, pub *rabbit.Publisher) *AuthHandler {
+	return &AuthHandler{repo: repo, jwt: jwt, tron: tron, publisher: pub}
 }
 
 // -------------------------
@@ -177,21 +175,30 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	resp.Merchant.WalletAddress = req.WalletAddress
 	resp.Merchant.Status = status
 
-	// Chain call AFTER DB commit — keep DB even if chain fails
-	if h.tron != nil {
-		txid, err := h.tron.RegisterMerchant(c.Request.Context(), merchantID, req.WalletAddress)
-		if err != nil {
+	// ✅ Publish event AFTER DB commit (no blockchain call here)
+	if h.publisher != nil {
+		if err := h.publisher.PublishJSON(
+			c.Request.Context(),
+			"merchant.created",
+			map[string]any{
+				"merchant_id":    merchantHex,
+				"wallet_address": req.WalletAddress,
+				"name":           req.Name,
+				"email":          req.Email,
+				"created_at":     time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		); err != nil {
 			resp.Chain.Registered = false
-			resp.Chain.Error = "skipped"
-			//resp.Chain.Error = err.Error()
+			resp.Chain.Error = "queue_publish_failed: " + err.Error()
 			c.JSON(http.StatusOK, resp)
 			return
 		}
-		resp.Chain.Registered = true
-		resp.Chain.Txid = txid
+
+		resp.Chain.Registered = false
+		resp.Chain.Error = "queued"
 	} else {
 		resp.Chain.Registered = false
-		resp.Chain.Error = "tron service not configured"
+		resp.Chain.Error = "publisher not configured"
 	}
 
 	c.JSON(http.StatusOK, resp)
