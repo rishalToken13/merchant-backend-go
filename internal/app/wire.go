@@ -9,6 +9,7 @@ import (
 	"token13/merchant-backend-go/internal/config"
 	applogger "token13/merchant-backend-go/internal/platform/logger"
 	"token13/merchant-backend-go/internal/repository/postgres"
+	"token13/merchant-backend-go/internal/services/tron"
 	"token13/merchant-backend-go/internal/transport/http/handlers"
 )
 
@@ -18,8 +19,9 @@ type Container struct {
 	API *API
 	DB  *postgres.DB
 
-	UserRepo *postgres.UserRepo
+	AuthRepo *postgres.AuthRepo
 	JWT      *auth.JWTManager
+	Tron     tron.Service
 }
 
 func Wire() (*Container, error) {
@@ -35,18 +37,22 @@ func Wire() (*Container, error) {
 		return nil, err
 	}
 
-	userRepo := postgres.NewUserRepo(db.SQL)
+	authRepo := postgres.NewAuthRepo(db.SQL)
 	jwtm := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer, 15*time.Minute)
 
-	authH := handlers.NewAuthHandler(userRepo, jwtm)
+	// stub for now
+	tronSvc := tron.NewStub()
+
+	authH := handlers.NewAuthHandler(authRepo, jwtm, tronSvc)
 	api := NewAPI(log, authH)
 
 	return &Container{
 		Cfg:      cfg,
 		Log:      log,
 		DB:       db,
-		UserRepo: userRepo,
+		AuthRepo: authRepo,
 		JWT:      jwtm,
+		Tron:     tronSvc,
 		API:      api,
 	}, nil
 }
